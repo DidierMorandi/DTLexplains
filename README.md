@@ -1,52 +1,65 @@
 # DTLexplains
 
-DTLexplains analyse les journaux Windows récents, regroupe les événements, les classe par catégorie et propose des explications en français avec des actions concrètes.
+DTLexplains analyzes recent Windows event logs, groups similar events,
+classifies them by category, and provides clear explanations in English
+together with practical recommendations.
 
 ## Version
 
-Version courante : **v1.0-4**.
+Current version: **v1.0-4**.
 
 ## Usage
 
-```powershell
+``` powershell
 python -X utf8 DTLexplains.py
 python -X utf8 DTLexplains.py --days 7
 python -X utf8 DTLexplains.py --logs System Application Security
-python -X utf8 DTLexplains.py --html reports\rapport.html
-python -X utf8 DTLexplains.py --json reports\rapport.json
+python -X utf8 DTLexplains.py --html reports\report.html
+python -X utf8 DTLexplains.py --json reports\report.json
 ```
 
-## Principes
+## Key Features
 
-- Console courte : résumé uniquement.
-- Rapport HTML complet.
-- Accès direct aux détails par catégorie.
-- Une section HTML séparée par catégorie.
-- Catégorie 9 : normal / courant / généralement bénin.
-- Aucun module Python externe requis.
+-   Concise console output: summary only.
+-   Complete HTML report.
+-   Direct links to category details.
+-   One dedicated HTML section per category.
+-   Category 9: normal / common / generally harmless events.
+-   No external Python modules required.
 
-## Modifications v1.0-4
+## What's New in v1.0-4
 
-- En-tête HTML des catégories revu : `Catégorie N — Nom (occurrences, groupes)`.
-- Résumé HTML : affichage du nombre d'occurrences avant le nombre de groupes.
-- Accès direct aux détails : suppression de la présentation ambiguë avec numérotation redondante.
-- Fusion logique des événements Service Control Manager 7000 et 7009 lorsqu'ils décrivent le même échec de démarrage.
-- Conservation de deux messages représentatifs lors d'une fusion 7000/7009.
-- Règle WinREAgent spécialisée : suppression du vague « lire le détail complet ».
-- Règle Netwtw08 5011 spécialisée : le paramètre manquant est interne au pilote/firmware, pas un réglage utilisateur.
-- Règle Windows Store / 0x80073D02 spécialisée : application probablement ouverte ou utilisée pendant sa mise à jour, généralement sans gravité.
-- Règles complémentaires : TPM-WMI, DeviceAssociationService, ESENT, Perflib, Windows Backup, Security-SPP 0x80070070.
+-   Improved HTML category headers:
+    `Category N — Name (occurrences, groups)`.
+-   HTML summary now displays the number of occurrences before the
+    number of groups.
+-   Simplified navigation by removing redundant numbering in the table
+    of contents.
+-   Logical merge of Service Control Manager events 7000 and 7009 when
+    they describe the same startup failure.
+-   Two representative messages are preserved when events 7000/7009 are
+    merged.
+-   Dedicated WinREAgent rule replacing the vague "read the full
+    details" message.
+-   Dedicated Netwtw08 5011 rule explaining that the missing parameter
+    is internal to the driver/firmware rather than a user setting.
+-   Dedicated Windows Store / 0x80073D02 rule: the application was most
+    likely open or in use during its update and the event is generally
+    harmless.
+-   Additional knowledge base rules: TPM-WMI, DeviceAssociationService,
+    ESENT, Perflib, Windows Backup, Security-SPP 0x80070070.
 
-## Sorties
+## Output
 
-Par défaut, le rapport HTML est créé dans :
+By default, the HTML report is created in:
 
-```text
-reports\DTLexplains_<machine>_<date>.html
+``` text
+reports\DTLexplains_<computer>_<date>.html
 ```
 
-Un JSON optionnel peut être généré avec `--json`.
+An optional JSON report can also be generated using `--json`.
 
 ## Notes
 
-Le journal Security exige souvent une console administrateur.
+Reading the **Security** log usually requires an elevated
+(Administrator) console.

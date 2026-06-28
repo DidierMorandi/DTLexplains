@@ -1,151 +1,52 @@
 # DTLexplains
 
-**DTLexplains** analyse les journaux Windows récents, classe les événements par catégories pédagogiques et produit un rapport HTML simple à parcourir.
-
-L'objectif n'est pas de remplacer l'Observateur d'événements Windows, mais de répondre rapidement à trois questions :
-
-- **Quoi ?** Quels événements reviennent dans les journaux principaux ?
-- **Pourquoi ?** Que signifient probablement ces événements ?
-- **Comment ?** Quelles actions concrètes peut-on tenter ?
+DTLexplains analyse les journaux Windows récents, regroupe les événements, les classe par catégorie et propose des explications en français avec des actions concrètes.
 
 ## Version
 
-Version courante : **v1.0-2**  
-Fichier de version : `.dtl_version`
+Version courante : **v1.0-4**.
 
-
-## Changements v1.0-2
-
-- En-tête HTML des catégories réordonné : numéro et nom, puis nombre d'occurrences.
-- Suppression du double numéro dans l'accès direct aux détails.
-- Regroupement des événements Service Control Manager 7000 et 7009 lorsqu'ils décrivent le même incident de démarrage de service.
-- Explication améliorée pour WinREAgent : le détail à lire est le message Windows affiché dans le bloc de l'événement.
-- Explication améliorée pour Netwtw08 5011 : le paramètre manquant est interne au pilote Intel Wi-Fi, au firmware ou au matériel.
-- Traduction pratique de l'erreur Microsoft Store 0x80073D02 : application/package en cours d'utilisation, généralement sans gravité.
-
-## Journaux analysés par défaut
-
-DTLexplains lit les cinq journaux principaux suivants :
-
-- `Application`
-- `System`
-- `Security`
-- `Setup`
-- `Windows PowerShell`
-
-Le journal `Security` peut nécessiter une console ouverte en administrateur.
-
-## Catégories
-
-Les événements sont regroupés dans neuf catégories :
-
-1. `MATERIEL`
-2. `DEMARRAGE_ALIMENTATION`
-3. `SECURITE`
-4. `RESEAU`
-5. `MISES_A_JOUR`
-6. `SERVICES`
-7. `APPLICATIONS`
-8. `POWERSHELL`
-9. `NORMAL`
-
-La catégorie **NORMAL** regroupe les événements fréquents, informatifs ou généralement bénins.
-
-## Utilisation rapide
+## Usage
 
 ```powershell
 python -X utf8 DTLexplains.py
-```
-
-Par défaut, le programme :
-
-- analyse les **30 derniers jours** ;
-- lit au maximum **5000 événements** ;
-- affiche uniquement un résumé dans la console ;
-- crée un rapport HTML complet dans le dossier `reports`.
-
-## Exemples
-
-Analyser les 7 derniers jours :
-
-```powershell
 python -X utf8 DTLexplains.py --days 7
-```
-
-Choisir les journaux :
-
-```powershell
 python -X utf8 DTLexplains.py --logs System Application Security
-```
-
-Inclure les événements Information :
-
-```powershell
-python -X utf8 DTLexplains.py --include-info
-```
-
-Créer aussi un JSON :
-
-```powershell
-python -X utf8 DTLexplains.py --json reports\dtlexplains.json
-```
-
-Choisir le rapport HTML :
-
-```powershell
 python -X utf8 DTLexplains.py --html reports\rapport.html
+python -X utf8 DTLexplains.py --json reports\rapport.json
 ```
 
-## Rapport HTML
+## Principes
 
-Le rapport HTML contient :
+- Console courte : résumé uniquement.
+- Rapport HTML complet.
+- Accès direct aux détails par catégorie.
+- Une section HTML séparée par catégorie.
+- Catégorie 9 : normal / courant / généralement bénin.
+- Aucun module Python externe requis.
 
-- une synthèse générale ;
-- des liens directs vers chaque catégorie ;
-- une section séparée par catégorie ;
-- les événements regroupés par journal, source, identifiant et niveau ;
-- une explication probable ;
-- une action proposée ;
-- un exemple de message Windows.
+## Modifications v1.0-4
 
-## Sortie console
+- En-tête HTML des catégories revu : `Catégorie N — Nom (occurrences, groupes)`.
+- Résumé HTML : affichage du nombre d'occurrences avant le nombre de groupes.
+- Accès direct aux détails : suppression de la présentation ambiguë avec numérotation redondante.
+- Fusion logique des événements Service Control Manager 7000 et 7009 lorsqu'ils décrivent le même échec de démarrage.
+- Conservation de deux messages représentatifs lors d'une fusion 7000/7009.
+- Règle WinREAgent spécialisée : suppression du vague « lire le détail complet ».
+- Règle Netwtw08 5011 spécialisée : le paramètre manquant est interne au pilote/firmware, pas un réglage utilisateur.
+- Règle Windows Store / 0x80073D02 spécialisée : application probablement ouverte ou utilisée pendant sa mise à jour, généralement sans gravité.
+- Règles complémentaires : TPM-WMI, DeviceAssociationService, ESENT, Perflib, Windows Backup, Security-SPP 0x80070070.
 
-La console reste volontairement courte. Elle affiche :
+## Sorties
 
-- la période analysée ;
-- le nombre d'événements lus ;
-- le nombre de groupes détectés ;
-- la répartition par catégorie ;
-- les actions prioritaires ;
-- le chemin du rapport HTML.
-
-## Pré-requis
-
-- Windows 10 ou Windows 11
-- Python 3.9 ou supérieur
-- PowerShell disponible sous le nom `powershell.exe`
-- Aucun module Python externe requis
-
-## Notes importantes
-
-DTLexplains exécute `Get-WinEvent` via PowerShell et convertit les résultats en JSON. Un journal inaccessible n'arrête pas l'analyse : un avertissement est ajouté au rapport.
-
-Certaines erreurs Windows, comme `DistributedCOM 10016`, peuvent être très fréquentes sans indiquer une panne réelle. DTLexplains les classe généralement en **NORMAL** pour éviter les fausses alertes.
-
-## Structure recommandée du dépôt
+Par défaut, le rapport HTML est créé dans :
 
 ```text
-DTLexplains/
-├── DTLexplains.py
-├── .dtl_version
-├── README.md
-├── .gitignore
-└── reports/          # généré localement, non versionné
+reports\DTLexplains_<machine>_<date>.html
 ```
 
-## Auteur et crédits
+Un JSON optionnel peut être généré avec `--json`.
 
-Projet de la suite DTL / NetDTL.
+## Notes
 
-- Conception, architecture, tests et documentation : Didier Morandi
-- Aide au codage et à la structuration : ChatGPT
+Le journal Security exige souvent une console administrateur.

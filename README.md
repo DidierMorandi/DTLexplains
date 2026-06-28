@@ -1,7 +1,6 @@
 # DTLexplains
 
 **DTLexplains** analyse les journaux Windows récents, classe les événements par catégories pédagogiques et produit un rapport HTML simple à parcourir.
-Didier DTL Morandi - www.netdtl.com
 
 L'objectif n'est pas de remplacer l'Observateur d'événements Windows, mais de répondre rapidement à trois questions :
 
@@ -11,8 +10,18 @@ L'objectif n'est pas de remplacer l'Observateur d'événements Windows, mais de 
 
 ## Version
 
-Version courante : **v1.0-1**  
+Version courante : **v1.0-2**  
 Fichier de version : `.dtl_version`
+
+
+## Changements v1.0-2
+
+- En-tête HTML des catégories réordonné : numéro et nom, puis nombre d'occurrences.
+- Suppression du double numéro dans l'accès direct aux détails.
+- Regroupement des événements Service Control Manager 7000 et 7009 lorsqu'ils décrivent le même incident de démarrage de service.
+- Explication améliorée pour WinREAgent : le détail à lire est le message Windows affiché dans le bloc de l'événement.
+- Explication améliorée pour Netwtw08 5011 : le paramètre manquant est interne au pilote Intel Wi-Fi, au firmware ou au matériel.
+- Traduction pratique de l'erreur Microsoft Store 0x80073D02 : application/package en cours d'utilisation, généralement sans gravité.
 
 ## Journaux analysés par défaut
 
@@ -45,7 +54,7 @@ La catégorie **NORMAL** regroupe les événements fréquents, informatifs ou g�
 ## Utilisation rapide
 
 ```powershell
-python -X utf8 .\DTLexplains.py
+python -X utf8 DTLexplains.py
 ```
 
 Par défaut, le programme :
@@ -60,31 +69,31 @@ Par défaut, le programme :
 Analyser les 7 derniers jours :
 
 ```powershell
-python -X utf8 .\DTLexplains.py --days 7
+python -X utf8 DTLexplains.py --days 7
 ```
 
 Choisir les journaux :
 
 ```powershell
-python -X utf8 .\DTLexplains.py --logs System Application Security
+python -X utf8 DTLexplains.py --logs System Application Security
 ```
 
 Inclure les événements Information :
 
 ```powershell
-python -X utf8 .\DTLexplains.py --include-info
+python -X utf8 DTLexplains.py --include-info
 ```
 
 Créer aussi un JSON :
 
 ```powershell
-python -X utf8 .\DTLexplains.py --json reports\dtlexplains.json
+python -X utf8 DTLexplains.py --json reports\dtlexplains.json
 ```
 
 Choisir le rapport HTML :
 
 ```powershell
-python -X utf8 .\DTLexplains.py --html reports\rapport.html
+python -X utf8 DTLexplains.py --html reports\rapport.html
 ```
 
 ## Rapport HTML

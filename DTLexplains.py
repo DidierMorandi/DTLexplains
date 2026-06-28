@@ -3,26 +3,29 @@
 DTLexplains - Analyse pédagogique des journaux Windows.
 
 Objectif :
-    Lire les événements des 30 derniers jours dans les principaux journaux Windows,
-    regrouper les événements, les classer, expliquer les causes probables et proposer
-    des actions concrètes.
+    Lire les événements des 30 derniers jours dans les principaux journaux
+    Windows, regrouper les événements, les classer, expliquer les causes
+    probables et proposer des actions concrètes.
 
-Origine :
-    Le coeur de lecture PowerShell/Get-WinEvent + ConvertTo-Json est extrait et
-    généralisé depuis la rubrique "events" de DTLsaysWhat.
+Version : v1.0-1
+
+Principes :
+    - sortie console courte : uniquement le résumé ;
+    - un rapport HTML complet ;
+    - liens directs du résumé vers les détails ;
+    - une section séparée par catégorie ;
+    - catégorie 9 : NORMAL.
 
 Usage :
-    python -X utf8 DTLexplains.py
-    python -X utf8 DTLexplains.py --days 7 --max-events 3000
-    python -X utf8 DTLexplains.py --logs System Application Security Setup "Windows PowerShell"
-    python -X utf8 DTLexplains.py --output C:\\Temp\\DTLexplains.txt
-    python -X utf8 DTLexplains.py --json C:\\Temp\\DTLexplains.json
-    python -X utf8 DTLexplains.py --html C:\\Temp\\DTLexplains.html
+    python -X utf8 .\DTLexplains.py
+    python -X utf8 .\DTLexplains.py --days 7
+    python -X utf8 .\DTLexplains.py --logs System Application Security
+    python -X utf8 .\DTLexplains.py --html reports\rapport.html
+    python -X utf8 .\DTLexplains.py --json reports\rapport.json
 
 Notes :
     - Le journal Security exige souvent une console administrateur.
-    - Aucun module externe requis.
-    - Compatible Windows PowerShell 5.x et PowerShell récent si powershell.exe existe.
+    - Aucun module Python externe requis.
 """
 
 from __future__ import annotations
@@ -37,11 +40,13 @@ import socket
 import subprocess
 import sys
 import traceback
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 APP_NAME = "DTLexplains"
-APP_VERSION = "v1.0.0"
+APP_VERSION = "v1.0-1"
+APP_VERSION_NUMERIC = "1.0.1"
 
 DEFAULT_LOGS = [
     "Application",
@@ -59,24 +64,46 @@ LEVEL_NAMES = {
     5: "Verbose",
 }
 
+CATEGORY_ORDER = [
+    "hardware",
+    "boot_power",
+    "security",
+    "network",
+    "updates",
+    "service",
+    "application",
+    "powershell",
+    "normal",
+]
+
+CATEGORY_NUMBERS = {name: index + 1 for index, name in enumerate(CATEGORY_ORDER)}
+
+CATEGORY_TITLES = {
+    "hardware": "Matériel / disque / pilote",
+    "boot_power": "Démarrage / alimentation",
+    "security": "Sécurité / authentification",
+    "network": "Réseau / DNS / DHCP / SMB",
+    "updates": "Mises à jour / installation",
+    "service": "Services Windows",
+    "application": "Applications",
+    "powershell": "PowerShell / scripts",
+    "normal": "Normal / courant / généralement bénin",
+}
+
 SEVERITY_ORDER = {
     "urgent": 0,
     "important": 1,
     "watch": 2,
     "plan": 3,
-    "info": 4,
-    "noise": 5,
-    "unknown": 6,
+    "normal": 4,
 }
 
 SEVERITY_TITLES = {
-    "urgent": "Urgent - à traiter en priorité",
-    "important": "Important - action recommandée",
+    "urgent": "Urgent",
+    "important": "Important",
     "watch": "À surveiller",
     "plan": "À planifier",
-    "info": "Information utile",
-    "noise": "Bruit courant / généralement bénin",
-    "unknown": "Non classé",
+    "normal": "Normal",
 }
 
 SEVERITY_BADGE = {
@@ -84,23 +111,7 @@ SEVERITY_BADGE = {
     "important": "IMPORTANT",
     "watch": "SURVEILLER",
     "plan": "PLANIFIER",
-    "info": "INFO",
-    "noise": "BRUIT",
-    "unknown": "INCONNU",
-}
-
-CATEGORY_TITLES = {
-    "hardware": "Matériel / disque / pilote",
-    "boot_power": "Démarrage / alimentation",
-    "security": "Sécurité / authentification",
-    "network": "Réseau / DNS / DHCP",
-    "updates": "Mises à jour / installation",
-    "service": "Services Windows",
-    "application": "Applications",
-    "powershell": "PowerShell / scripts",
-    "system": "Système",
-    "noise": "Bruit connu",
-    "unknown": "Non classé",
+    "normal": "NORMAL",
 }
 
 
@@ -159,11 +170,18 @@ def shorten(text: str, limit: int = 260) -> str:
     one_line = " ".join(safe_str(text).split())
     if len(one_line) <= limit:
         return one_line
-    return one_line[: limit - 3] + "..."
+    return one_line[: max(0, limit - 3)] + "..."
+
+
+def slug(text: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "-" for ch in text).strip("-")
+
+
+def quote_ps_string(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
 
 
 def ps_json(script: str, timeout: int = 120) -> List[Dict[str, Any]]:
-    """Exécute PowerShell en UTF-8 et retourne une liste de dictionnaires JSON."""
     command = [
         "powershell",
         "-NoProfile",
@@ -173,10 +191,11 @@ def ps_json(script: str, timeout: int = 120) -> List[Dict[str, Any]]:
         "-Command",
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + script,
     ]
+
     try:
         result = subprocess.run(command, capture_output=True, timeout=timeout)
-    except FileNotFoundError:
-        raise RuntimeError("powershell.exe introuvable. DTLexplains doit être lancé sous Windows.")
+    except FileNotFoundError as exc:
+        raise RuntimeError("powershell.exe introuvable. DTLexplains doit être lancé sous Windows.") from exc
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"Timeout PowerShell après {timeout} secondes.") from exc
 
@@ -185,37 +204,27 @@ def ps_json(script: str, timeout: int = 120) -> List[Dict[str, Any]]:
 
     if result.returncode != 0 and not stdout:
         raise RuntimeError(stderr or f"PowerShell a retourné le code {result.returncode}.")
+
     if not stdout:
         return []
 
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError as exc:
-        preview = shorten(stdout, 500)
-        raise RuntimeError(f"PowerShell n'a pas retourné un JSON valide : {preview}") from exc
+        raise RuntimeError("PowerShell n'a pas retourné un JSON valide : " + shorten(stdout, 500)) from exc
 
     if isinstance(data, dict):
         return [data]
     if isinstance(data, list):
-        return [x for x in data if isinstance(x, dict)]
+        return [row for row in data if isinstance(row, dict)]
     return []
 
 
-def quote_ps_string(text: str) -> str:
-    return "'" + text.replace("'", "''") + "'"
-
-
 def collect_events(logs: Sequence[str], days: int, max_events: int, include_info: bool) -> Tuple[List[RawEvent], List[str]]:
-    """Collecte les événements Windows avec Get-WinEvent.
-
-    On interroge journal par journal pour qu'un journal inaccessible, typiquement Security
-    sans élévation, ne bloque pas tout le rapport.
-    """
     levels = "1,2,3" if not include_info else "1,2,3,4"
     start_iso = (_dt.datetime.now() - _dt.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
     events: List[RawEvent] = []
     warnings: List[str] = []
-
     per_log_limit = max(1, max_events // max(1, len(logs)))
 
     for log in logs:
@@ -224,9 +233,8 @@ $ErrorActionPreference = 'SilentlyContinue'
 $logName = {quote_ps_string(log)}
 $start = [datetime]{quote_ps_string(start_iso)}
 $items = Get-WinEvent -FilterHashtable @{{LogName=$logName; StartTime=$start; Level={levels}}} -MaxEvents {per_log_limit} -ErrorAction SilentlyContinue |
-    Select-Object `
-        LogName, ProviderName, Id, Level, LevelDisplayName, RecordId, MachineName, UserId, `
-        @{{Name='TimeCreated';Expression={{ $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') }}}}, `
+    Select-Object LogName, ProviderName, Id, Level, LevelDisplayName, RecordId, MachineName, UserId,
+        @{{Name='TimeCreated';Expression={{ $_.TimeCreated.ToString('yyyy-MM-dd HH:mm:ss') }}}},
         Message
 if ($null -eq $items) {{ @() | ConvertTo-Json -Compress -Depth 4 }}
 else {{ $items | ConvertTo-Json -Compress -Depth 4 }}
@@ -267,91 +275,91 @@ def message_norm(message: str) -> str:
 
 
 def rule_for_event(log: str, provider: str, event_id: int, level: int, message: str, count: int) -> Tuple[str, str, str, str]:
-    """Retourne category, severity, why, action."""
     p = provider_norm(provider)
     m = message_norm(message)
     log_l = log.lower()
 
-    # Sécurité : événements très utiles quand on audite un poste.
     if log_l == "security":
         if event_id == 4625:
             return (
                 "security", "important",
-                "Échecs d'ouverture de session. Cela peut être un mot de passe enregistré obsolète, un service mal configuré ou une tentative répétée.",
-                "Identifier le compte et l'adresse source dans le détail de l'événement. Corriger les identifiants enregistrés, puis vérifier qu'il n'y a pas de rafale anormale.",
+                "Échecs d'ouverture de session. Cause fréquente : mot de passe enregistré obsolète, service mal configuré ou tentative répétée.",
+                "Identifier le compte, le type de connexion et l'adresse source. Corriger les identifiants enregistrés ou investiguer si la rafale est anormale.",
             )
         if event_id in (4720, 4722, 4723, 4724, 4725, 4726, 4732, 4733):
             return (
                 "security", "urgent",
                 "Modification de compte ou de groupe local. C'est normal après une intervention, suspect sinon.",
-                "Vérifier qui a effectué l'action, à quelle heure, et comparer avec les interventions prévues. Documenter ou révoquer si ce n'est pas attendu.",
+                "Vérifier qui a effectué l'action, à quelle heure, puis documenter ou révoquer si ce n'était pas prévu.",
             )
         if event_id == 1102:
             return (
                 "security", "urgent",
-                "Le journal d'audit Security a été effacé. C'est rare et très significatif.",
-                "Contrôler immédiatement le compte auteur, sauvegarder les journaux restants et rechercher d'autres traces autour de la même heure.",
+                "Le journal d'audit Security a été effacé. C'est rare et significatif.",
+                "Contrôler immédiatement le compte auteur, sauvegarder les journaux restants et rechercher d'autres traces au même horaire.",
             )
-        if event_id in (4624, 4634, 4672):
+        if event_id in (4624, 4634, 4672, 4688):
             return (
-                "security", "info",
-                "Ouverture/fermeture de session ou privilèges spéciaux. Utile pour corréler, rarement problématique seul.",
-                "Ne pas traiter seul. Utiliser pour confirmer la chronologie d'un incident ou d'une intervention.",
+                "normal", "normal",
+                "Ouverture, fermeture de session, privilèges ou création de processus. Utile pour la chronologie, rarement problématique seul.",
+                "Ne pas traiter isolément. Utiliser seulement pour corréler un incident ou une intervention.",
             )
         return (
-            "security", "watch" if level <= 3 else "info",
+            "security", "watch" if level <= 3 else "normal",
             "Événement de sécurité non spécialisé par la base DTLexplains.",
-            "Lire le détail : compte, poste source, type d'ouverture de session et heure. Classer ensuite comme normal ou suspect.",
+            "Lire le détail : compte, poste source, type de connexion et heure. Classer ensuite comme normal ou suspect.",
         )
 
-    # Matériel, disque, corruption, pilotes.
     if any(x in p for x in ("disk", "ntfs", "storahci", "stornvme", "volmgr", "partmgr")):
         return (
             "hardware", "urgent" if level <= 2 else "important",
             "Windows signale un problème de stockage, de volume ou de pilote disque.",
-            "Sauvegarder avant tout. Contrôler l'état SMART constructeur, l'Observateur d'événements autour de la même heure, puis lancer chkdsk uniquement après sauvegarde.",
+            "Sauvegarder avant tout. Contrôler l'état SMART constructeur, puis envisager chkdsk uniquement après sauvegarde.",
         )
     if any(x in p for x in ("whealogger", "whea")):
         return (
             "hardware", "urgent",
             "Erreur matérielle signalée par WHEA : CPU, mémoire, bus PCIe, alimentation ou pilote bas niveau.",
-            "Vérifier température, RAM, BIOS/UEFI, pilotes chipset/GPU. Si répétitif, considérer un diagnostic matériel.",
+            "Vérifier température, RAM, BIOS/UEFI et pilotes chipset/GPU. Si répétitif, lancer un diagnostic matériel.",
         )
     if "display" in p or "nvlddmkm" in p or "amdkmdag" in p or "igfx" in p:
         return (
             "hardware", "important",
             "Le pilote graphique ou l'affichage a signalé une erreur.",
-            "Mettre à jour ou réinstaller proprement le pilote graphique. Vérifier si les erreurs coïncident avec veille, jeux, vidéo ou écran externe.",
+            "Mettre à jour ou réinstaller proprement le pilote graphique. Vérifier le lien avec veille, jeux, vidéo ou écran externe.",
         )
 
-    # Boot, alimentation, crashs.
     if "kernelpower" in p or event_id == 41:
         return (
             "boot_power", "urgent",
-            "Arrêt brutal ou redémarrage sans extinction propre. Souvent coupure, plantage, alimentation, surchauffe ou appui long sur Power.",
-            "Demander ce qui s'est passé à l'heure indiquée. Vérifier alimentation, batterie/onduleur, surchauffe, écrans bleus et mises à jour de pilotes.",
+            "Arrêt brutal ou redémarrage sans extinction propre. Causes fréquentes : coupure, plantage, alimentation, surchauffe ou appui long sur Power.",
+            "Rechercher ce qui s'est passé à l'heure indiquée. Vérifier alimentation, batterie/onduleur, surchauffe, écrans bleus et pilotes.",
         )
-    if "bugcheck" in p or event_id == 1001 and "bugcheck" in m:
+    if "bugcheck" in p or (event_id == 1001 and "bugcheck" in m):
         return (
             "boot_power", "urgent",
             "Windows a enregistré un bugcheck, donc probablement un écran bleu.",
-            "Conserver les minidumps, relever le code d'arrêt, puis chercher le pilote ou matériel fautif avant toute réinstallation sauvage.",
+            "Conserver les minidumps, relever le code d'arrêt et chercher le pilote ou matériel fautif avant toute réinstallation.",
         )
-    if "eventlog" in p and event_id in (6008, 6005, 6006):
-        severity = "important" if event_id == 6008 else "info"
+    if "eventlog" in p and event_id in (6005, 6006):
         return (
-            "boot_power", severity,
-            "Chronologie de démarrage/arrêt du journal système.",
-            "Pour 6008, rechercher l'événement Kernel-Power 41 et les événements juste avant l'arrêt inattendu.",
+            "normal", "normal",
+            "Démarrage ou arrêt normal du service journal d'événements.",
+            "Aucune action, sauf pour reconstituer la chronologie.",
+        )
+    if "eventlog" in p and event_id == 6008:
+        return (
+            "boot_power", "important",
+            "Windows indique que l'arrêt précédent était inattendu.",
+            "Rechercher Kernel-Power 41 et les événements juste avant l'arrêt.",
         )
 
-    # Services.
     if "servicecontrolmanager" in p:
         if event_id in (7000, 7001, 7009, 7011, 7022, 7023, 7024, 7031, 7034):
             return (
                 "service", "important",
                 "Un service Windows ou applicatif n'a pas démarré, a expiré ou s'est arrêté anormalement.",
-                "Identifier le service cité dans le message. Vérifier dépendances, compte de service, chemin exécutable, droits et événements voisins.",
+                "Identifier le service cité. Vérifier dépendances, compte de service, chemin exécutable, droits et événements voisins.",
             )
         if event_id in (7040, 7045):
             return (
@@ -360,17 +368,16 @@ def rule_for_event(log: str, provider: str, event_id: int, level: int, message: 
                 "Vérifier que le service installé ou modifié correspond à une action attendue. Inspecter le chemin binaire si le nom est inconnu.",
             )
         return (
-            "service", "watch" if level <= 3 else "info",
+            "service", "watch" if level <= 3 else "normal",
             "Événement du gestionnaire de services.",
             "Lire le nom du service dans le message et vérifier s'il est attendu sur cette machine.",
         )
 
-    # Réseau.
-    if any(x in p for x in ("dhcp", "dnsclient", "tcpip", "netwtw", "netwtw10", "netlogon", "lanmanworkstation", "srv")):
+    if any(x in p for x in ("dhcp", "dnsclient", "tcpip", "netwtw", "netlogon", "lanmanworkstation", "srv")):
         return (
             "network", "important" if level <= 2 else "watch",
             "Windows signale un problème réseau, DNS, DHCP, SMB ou pilote carte réseau.",
-            "Comparer IP/passerelle/DNS avec un poste sain. Tester ping passerelle, résolution DNS, accès par IP puis par nom. Vérifier aussi le pilote réseau.",
+            "Comparer IP/passerelle/DNS avec un poste sain. Tester ping passerelle, résolution DNS, accès par IP puis par nom.",
         )
     if "schannel" in p:
         return (
@@ -379,92 +386,79 @@ def rule_for_event(log: str, provider: str, event_id: int, level: int, message: 
             "Chercher l'application au même horaire. Surveiller si cela bloque réellement un usage ; ne pas corriger au hasard si tout fonctionne.",
         )
 
-    # Updates / setup.
     if any(x in p for x in ("windowsupdateclient", "servicing", "setup", "msiinstaller", "wusa")) or log_l == "setup":
         return (
             "updates", "important" if level <= 2 else "plan",
             "Installation, mise à jour ou maintenance Windows/applicative en erreur ou à contrôler.",
-            "Consulter l'historique Windows Update et relancer après redémarrage. Si répétitif : DISM /Online /Cleanup-Image /RestoreHealth puis sfc /scannow.",
+            "Consulter l'historique Windows Update et relancer après redémarrage. Si répétitif : DISM puis sfc /scannow.",
         )
 
-    # Applications.
-    if any(x in p for x in ("applicationerror", "applicationhang", "windows error reporting", "wer")):
+    if any(x in p for x in ("applicationerror", "applicationhang", "windowserrorreporting", "wer")):
         return (
             "application", "important" if count >= 3 else "watch",
             "Une application plante ou ne répond plus.",
-            "Identifier l'exécutable fautif dans le message, mettre à jour l'application, tester un profil utilisateur propre si le crash est récurrent.",
+            "Identifier l'exécutable fautif, mettre à jour l'application, tester un profil utilisateur propre si le crash est récurrent.",
         )
     if "appmodelruntime" in p or "appx" in p:
         return (
-            "application", "watch",
-            "Événement lié aux applications Store/AppX ou à leur modèle d'exécution.",
-            "Surveiller seulement si une application Windows ne se lance pas. Sinon classer comme bruit courant.",
+            "normal", "normal",
+            "Événement lié aux applications Store/AppX. Très fréquent sur Windows.",
+            "Surveiller seulement si une application Windows ne se lance pas.",
         )
 
-    # PowerShell.
     if "powershell" in p or log_l == "windows powershell":
         if level <= 3:
             return (
                 "powershell", "watch",
-                "Erreur ou avertissement PowerShell. Peut être un script de maintenance, GLPI, sauvegarde, ou une tâche planifiée.",
+                "Erreur ou avertissement PowerShell. Peut venir d'un script de maintenance, GLPI, sauvegarde ou tâche planifiée.",
                 "Lire le script ou la commande dans le détail. Vérifier les tâches planifiées et les droits du compte d'exécution.",
             )
         return (
-            "powershell", "info",
+            "normal", "normal",
             "Trace PowerShell informative.",
             "Utiliser seulement pour reconstituer la chronologie d'une intervention ou d'un script.",
         )
 
-    # Bruits Windows fréquents.
     if "distributedcom" in p and event_id in (10016, 10010):
         return (
-            "noise", "noise",
+            "normal", "normal",
             "DistributedCOM 10016/10010 est très fréquent sur Windows et rarement la cause première d'une panne.",
             "Ne pas modifier les permissions DCOM sans symptôme clair. Chercher plutôt les erreurs matérielles, services ou applications autour de la même heure.",
         )
     if "restartmanager" in p:
         return (
-            "noise", "info",
+            "normal", "normal",
             "Restart Manager accompagne souvent installations et mises à jour.",
             "À utiliser comme indice chronologique, pas comme erreur principale.",
         )
 
-    # Règle générique.
     if level == 1:
         return (
-            "system", "urgent",
+            "boot_power", "urgent",
             "Événement critique non reconnu par la base DTLexplains.",
-            "Lire le détail complet, puis corréler avec les événements des 5 minutes avant/après.",
+            "Lire le détail complet et corréler avec les événements des 5 minutes avant/après.",
         )
     if level == 2:
         return (
-            "unknown", "watch",
+            "application", "watch",
             "Erreur non reconnue par la base DTLexplains.",
-            "Surveiller si elle revient. Si elle est fréquente ou liée à un symptôme utilisateur, chercher provider + ID dans la documentation Microsoft ou éditeur.",
+            "Surveiller si elle revient. Si elle est fréquente ou liée à un symptôme utilisateur, chercher provider + ID.",
         )
     if level == 3:
         return (
-            "unknown", "plan",
-            "Avertissement non reconnu par la base DTLexplains.",
-            "Classer comme secondaire sauf répétition massive ou symptôme correspondant.",
+            "normal", "normal" if count < 5 else "plan",
+            "Avertissement non reconnu. Beaucoup d'avertissements Windows sont secondaires sans symptôme correspondant.",
+            "Classer comme secondaire sauf répétition massive ou symptôme utilisateur au même horaire.",
         )
     return (
-        "unknown", "info",
-        "Information non reconnue par la base DTLexplains.",
-        "Conserver pour la chronologie, pas d'action directe.",
+        "normal", "normal",
+        "Information Windows conservée pour la chronologie.",
+        "Aucune action directe.",
     )
 
 
 def score_event(severity: str, level: int, count: int, last_seen: str) -> int:
-    base = {
-        "urgent": 100,
-        "important": 75,
-        "watch": 50,
-        "plan": 35,
-        "info": 15,
-        "noise": 5,
-        "unknown": 25,
-    }.get(severity, 25)
+    base = {"urgent": 100, "important": 75, "watch": 50, "plan": 35, "normal": 5}.get(severity, 25)
     base += max(0, 5 - min(level or 5, 5)) * 5
     base += min(count, 20)
     try:
@@ -481,6 +475,7 @@ def score_event(severity: str, level: int, count: int, last_seen: str) -> int:
 
 def summarize_events(events: Sequence[RawEvent]) -> List[EventGroup]:
     grouped: Dict[Tuple[str, str, int, int], Dict[str, Any]] = {}
+
     for event in events:
         key = (event.log, event.provider, event.event_id, event.level)
         item = grouped.setdefault(
@@ -503,8 +498,8 @@ def summarize_events(events: Sequence[RawEvent]) -> List[EventGroup]:
             item["first_seen"] = event.time_created
         if event.time_created and event.time_created > item["last_seen"]:
             item["last_seen"] = event.time_created
-            if event.message:
-                item["sample_message"] = event.message
+        if event.message:
+            item["sample_message"] = event.message
 
     summaries: List[EventGroup] = []
     for item in grouped.values():
@@ -523,7 +518,7 @@ def summarize_events(events: Sequence[RawEvent]) -> List[EventGroup]:
                 first_seen=item["first_seen"],
                 last_seen=item["last_seen"],
                 machine=item["machine"],
-                sample_message=shorten(item["sample_message"], 500),
+                sample_message=shorten(item["sample_message"], 800),
                 category=category,
                 severity=severity,
                 score=score,
@@ -534,182 +529,239 @@ def summarize_events(events: Sequence[RawEvent]) -> List[EventGroup]:
 
     return sorted(
         summaries,
-        key=lambda x: (SEVERITY_ORDER.get(x.severity, 99), -x.score, -x.count, x.log, x.provider, x.event_id),
+        key=lambda g: (
+            CATEGORY_NUMBERS.get(g.category, 99),
+            SEVERITY_ORDER.get(g.severity, 99),
+            -g.score,
+            -g.count,
+            g.log,
+            g.provider,
+            g.event_id,
+        ),
     )
+
+
+def category_counts(groups: Sequence[EventGroup]) -> collections.Counter[str]:
+    return collections.Counter(group.category for group in groups)
 
 
 def top_actions(groups: Sequence[EventGroup], limit: int = 8) -> List[str]:
     actions: List[str] = []
     seen = set()
-    for group in groups:
-        if group.severity in ("noise", "info"):
+    priority = sorted(
+        groups,
+        key=lambda g: (SEVERITY_ORDER.get(g.severity, 99), -g.score, -g.count),
+    )
+    for group in priority:
+        if group.severity == "normal":
             continue
-        text = f"{SEVERITY_BADGE.get(group.severity, group.severity)} - {group.provider} {group.event_id} ({group.count}x) : {group.action}"
-        key = (group.category, group.action)
+        key = (group.category, group.provider, group.event_id, group.action)
         if key in seen:
             continue
         seen.add(key)
-        actions.append(text)
+        actions.append(
+            f"{SEVERITY_BADGE.get(group.severity, group.severity)} - "
+            f"catégorie {CATEGORY_NUMBERS.get(group.category, '?')} {CATEGORY_TITLES.get(group.category, group.category)} - "
+            f"{group.provider} {group.event_id} ({group.count}x) : {group.action}"
+        )
         if len(actions) >= limit:
             break
     return actions
 
 
-def build_text_report(groups: Sequence[EventGroup], raw_count: int, warnings: Sequence[str], args: argparse.Namespace) -> str:
+def build_console_summary(groups: Sequence[EventGroup], raw_count: int, warnings: Sequence[str], args: argparse.Namespace, html_path: str) -> str:
+    counts = category_counts(groups)
+    actions = top_actions(groups)
     lines: List[str] = []
-    hostname = socket.gethostname()
+
     lines.append(f"{APP_NAME} {APP_VERSION}")
-    lines.append(f"Machine              : {hostname}")
-    lines.append(f"Date du rapport      : {now_string()}")
+    lines.append(f"Machine              : {socket.gethostname()}")
     lines.append(f"Période analysée     : {args.days} derniers jours")
-    lines.append(f"Journaux demandés    : {', '.join(args.logs)}")
     lines.append(f"Événements lus       : {raw_count}")
     lines.append(f"Groupes détectés     : {len(groups)}")
-    lines.append("")
-
+    lines.append(f"Rapport HTML         : {html_path}")
     if warnings:
-        lines.append("JOURNAUX NON LUS / AVERTISSEMENTS")
-        lines.append("-" * 72)
-        for warning in warnings:
-            lines.append(f"- {warning}")
-        lines.append("")
-
-    actions = top_actions(groups)
-    lines.append("SYNTHÈSE DTL")
+        lines.append(f"Avertissements       : {len(warnings)} journal(aux) non lu(s) ou partiellement lu(s)")
+    lines.append("")
+    lines.append("Répartition par catégorie")
+    lines.append("-" * 72)
+    for category in CATEGORY_ORDER:
+        number = CATEGORY_NUMBERS[category]
+        title = CATEGORY_TITLES[category]
+        lines.append(f"{number}. {title:<40} {counts.get(category, 0)}")
+    lines.append("")
+    lines.append("Actions prioritaires")
     lines.append("-" * 72)
     if actions:
-        for idx, action in enumerate(actions, 1):
-            lines.append(f"{idx}. {action}")
+        for index, action in enumerate(actions, 1):
+            lines.append(f"{index}. {action}")
     else:
-        lines.append("Aucune action urgente détectée dans les événements lus.")
-    lines.append("")
-
-    counters_sev = collections.Counter(g.severity for g in groups)
-    counters_cat = collections.Counter(g.category for g in groups)
-    lines.append("RÉPARTITION")
-    lines.append("-" * 72)
-    lines.append("Par gravité : " + ", ".join(f"{SEVERITY_BADGE.get(k, k)}={v}" for k, v in counters_sev.items()))
-    lines.append("Par catégorie : " + ", ".join(f"{CATEGORY_TITLES.get(k, k)}={v}" for k, v in counters_cat.items()))
-    lines.append("")
-
-    by_sev: Dict[str, List[EventGroup]] = collections.defaultdict(list)
-    for group in groups:
-        by_sev[group.severity].append(group)
-
-    for severity in sorted(by_sev, key=lambda s: SEVERITY_ORDER.get(s, 99)):
-        items = by_sev[severity]
-        if args.hide_noise and severity in ("noise", "info"):
-            continue
-        lines.append(SEVERITY_TITLES.get(severity, severity.upper()))
-        lines.append("=" * 72)
-        for group in items[: args.top_per_section]:
-            lines.append(f"{group.provider} {group.event_id}  [{group.log}]  {group.level_name}")
-            lines.append(f"Catégorie            : {CATEGORY_TITLES.get(group.category, group.category)}")
-            lines.append(f"Score DTL            : {group.score}")
-            lines.append(f"Occurrences          : {group.count}")
-            lines.append(f"Première occurrence  : {group.first_seen or 'N/A'}")
-            lines.append(f"Dernière occurrence  : {group.last_seen or 'N/A'}")
-            lines.append(f"Pourquoi             : {group.why}")
-            lines.append(f"Action proposée      : {group.action}")
-            if group.sample_message:
-                lines.append(f"Exemple              : {shorten(group.sample_message, args.message_limit)}")
-            lines.append("")
-        hidden = len(items) - min(len(items), args.top_per_section)
-        if hidden > 0:
-            lines.append(f"... {hidden} autre(s) groupe(s) non affiché(s) dans cette section.")
-            lines.append("")
-
+        lines.append("Aucune action prioritaire détectée dans les événements lus.")
     return "\n".join(lines)
 
 
+def html_escape(text: Any) -> str:
+    return html.escape(safe_str(text))
+
+
 def build_html_report(groups: Sequence[EventGroup], raw_count: int, warnings: Sequence[str], args: argparse.Namespace) -> str:
-    text_report = build_text_report(groups, raw_count, warnings, args)
+    counts = category_counts(groups)
+    actions = top_actions(groups)
+    generated_at = now_string()
+    host = socket.gethostname()
+
     css = """
-body{font-family:Segoe UI,Arial,sans-serif;background:#111;color:#ddd;margin:0;padding:28px;}
-h1{color:#fff;margin-top:0}.meta{color:#aaa;margin-bottom:20px}.card{background:#1b1b1b;border:1px solid #333;border-radius:10px;padding:14px;margin:12px 0;}
-.badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#333;color:#fff;font-size:12px;margin-right:8px}.urgent{background:#8b0000}.important{background:#9a5800}.watch{background:#5f5f00}.plan{background:#334}.info{background:#244}.noise{background:#333}.unknown{background:#444}
-pre{white-space:pre-wrap;font-family:Consolas,monospace;font-size:13px;line-height:1.45}.small{color:#999;font-size:12px}a{color:#8ab4f8}
+:root{--bg:#0f1115;--panel:#181b22;--panel2:#20242d;--text:#e8e8e8;--muted:#a9b0bd;--line:#333a46;--link:#8ab4f8;}
+body{font-family:Segoe UI,Arial,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:28px;line-height:1.45;}
+h1{margin:0 0 6px 0;color:#fff;font-size:30px} h2{margin-top:32px;border-bottom:1px solid var(--line);padding-bottom:8px} h3{margin:0 0 8px 0}.meta{color:var(--muted);margin-bottom:20px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:18px 0}.box,.event{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}.box strong{font-size:24px;display:block}.toc a,.top a{color:var(--link);text-decoration:none}.toc li{margin:5px 0}.badge{display:inline-block;padding:2px 8px;border-radius:999px;color:#fff;font-size:12px;margin-right:8px}.urgent{background:#8b0000}.important{background:#9a5800}.watch{background:#5f5f00}.plan{background:#334}.normal{background:#34513a}.small{color:var(--muted);font-size:13px}.message{background:var(--panel2);border-radius:8px;padding:10px;white-space:pre-wrap;font-family:Consolas,monospace;font-size:13px;overflow:auto}.warn{border-left:4px solid #9a5800}.empty{color:var(--muted);font-style:italic}.anchor{color:var(--muted);font-size:13px}.top{margin-top:10px}.action li{margin:8px 0}
 """
-    cards = []
-    for g in groups:
-        if args.hide_noise and g.severity in ("noise", "info"):
-            continue
-        cards.append(f"""
-<div class="card">
-  <div><span class="badge {html.escape(g.severity)}">{html.escape(SEVERITY_BADGE.get(g.severity, g.severity))}</span><b>{html.escape(g.provider)} {g.event_id}</b> <span class="small">[{html.escape(g.log)} - {html.escape(g.level_name)}]</span></div>
-  <p><b>Occurrences :</b> {g.count} &nbsp; <b>Dernière :</b> {html.escape(g.last_seen or 'N/A')} &nbsp; <b>Score :</b> {g.score}</p>
-  <p><b>Catégorie :</b> {html.escape(CATEGORY_TITLES.get(g.category, g.category))}</p>
-  <p><b>Pourquoi :</b> {html.escape(g.why)}</p>
-  <p><b>Action :</b> {html.escape(g.action)}</p>
-  <p class="small"><b>Exemple :</b> {html.escape(shorten(g.sample_message, args.message_limit))}</p>
-</div>""")
-    return f"""<!DOCTYPE html>
-<html lang="fr"><head><meta charset="utf-8"><title>{APP_NAME} {APP_VERSION}</title><style>{css}</style></head>
+
+    toc_items = []
+    summary_boxes = []
+    sections = []
+
+    for category in CATEGORY_ORDER:
+        number = CATEGORY_NUMBERS[category]
+        title = CATEGORY_TITLES[category]
+        anchor = f"cat-{number}-{slug(category)}"
+        count = counts.get(category, 0)
+        toc_items.append(f'<li><a href="#{anchor}">{number}. {html_escape(title)}</a> — {count} groupe(s)</li>')
+        summary_boxes.append(f'<div class="box"><strong>{count}</strong>{number}. {html_escape(title)}</div>')
+
+        items = [g for g in groups if g.category == category]
+        event_cards = []
+        for g in items:
+            event_cards.append(
+                f"""
+<div class="event">
+  <h3><span class="badge {html_escape(g.severity)}">{html_escape(SEVERITY_BADGE.get(g.severity, g.severity))}</span>{html_escape(g.provider)} {g.event_id}</h3>
+  <div class="small">Journal : {html_escape(g.log)} — Niveau : {html_escape(g.level_name)} — Occurrences : {g.count} — Score : {g.score}</div>
+  <div class="small">Première occurrence : {html_escape(g.first_seen or 'N/A')} — Dernière occurrence : {html_escape(g.last_seen or 'N/A')}</div>
+  <p><strong>Pourquoi :</strong> {html_escape(g.why)}</p>
+  <p><strong>Action proposée :</strong> {html_escape(g.action)}</p>
+  <div class="message">{html_escape(shorten(g.sample_message, args.message_limit))}</div>
+</div>
+"""
+            )
+        sections.append(
+            f"""
+<section id="{anchor}">
+  <h2>{number}. {html_escape(title)} <span class="anchor">({len(items)} groupe(s))</span></h2>
+  {''.join(event_cards) if event_cards else '<p class="empty">Aucun événement dans cette catégorie.</p>'}
+  <p class="top"><a href="#resume">Retour au résumé</a></p>
+</section>
+"""
+        )
+
+    warning_html = ""
+    if warnings:
+        warning_html = '<div class="box warn"><h2>Avertissements</h2><ul>' + "".join(
+            f"<li>{html_escape(warning)}</li>" for warning in warnings
+        ) + "</ul></div>"
+
+    actions_html = ""
+    if actions:
+        actions_html = '<ol class="action">' + "".join(f"<li>{html_escape(action)}</li>" for action in actions) + "</ol>"
+    else:
+        actions_html = '<p class="empty">Aucune action prioritaire détectée dans les événements lus.</p>'
+
+    return f"""<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <title>{APP_NAME} {APP_VERSION}</title>
+  <style>{css}</style>
+</head>
 <body>
-<h1>{APP_NAME} {APP_VERSION}</h1>
-<div class="meta">Machine {html.escape(socket.gethostname())} - {html.escape(now_string())} - {args.days} derniers jours - {raw_count} événements lus - {len(groups)} groupes</div>
-<h2>Synthèse texte</h2><pre>{html.escape(text_report)}</pre>
-<h2>Détail classé</h2>
-{''.join(cards) if cards else '<p>Aucun événement à afficher.</p>'}
-</body></html>"""
+  <main>
+    <h1 id="resume">{APP_NAME} {APP_VERSION}</h1>
+    <div class="meta">Machine {html_escape(host)} — Rapport généré le {html_escape(generated_at)} — Période : {args.days} derniers jours — Événements lus : {raw_count} — Groupes : {len(groups)}</div>
+
+    <h2>Résumé</h2>
+    <div class="grid">{''.join(summary_boxes)}</div>
+
+    <h2>Accès direct aux détails</h2>
+    <ol class="toc">{''.join(toc_items)}</ol>
+
+    <h2>Actions prioritaires</h2>
+    {actions_html}
+
+    {warning_html}
+
+    {''.join(sections)}
+  </main>
+</body>
+</html>
+"""
 
 
 def default_output_path(ext: str) -> str:
     stamp = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    return os.path.abspath(f"DTLexplains_{socket.gethostname()}_{stamp}.{ext}")
+    folder = Path("reports")
+    folder.mkdir(parents=True, exist_ok=True)
+    return str((folder / f"DTLexplains_{socket.gethostname()}_{stamp}.{ext}").resolve())
 
 
 def write_text(path: str, content: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="DTLexplains",
+        prog=APP_NAME,
         description="Analyse les journaux Windows récents, classe les événements et propose des actions.",
     )
     parser.add_argument("--days", type=int, default=30, help="Nombre de jours à analyser. Défaut : 30.")
     parser.add_argument("--max-events", type=int, default=5000, help="Nombre maximal d'événements lus au total. Défaut : 5000.")
     parser.add_argument("--logs", nargs="+", default=DEFAULT_LOGS, help="Journaux Windows à lire.")
     parser.add_argument("--include-info", action="store_true", help="Inclure aussi les événements Information, plus bavards.")
-    parser.add_argument("--hide-noise", action="store_true", help="Masquer les sections bruit/info dans le rapport texte.")
-    parser.add_argument("--top-per-section", type=int, default=25, help="Nombre maximal d'éléments affichés par gravité.")
-    parser.add_argument("--message-limit", type=int, default=320, help="Longueur maximale des exemples de message.")
-    parser.add_argument("--output", "-o", help="Fichier texte de sortie. Défaut : nom automatique.")
-    parser.add_argument("--json", dest="json_path", help="Fichier JSON de sortie.")
-    parser.add_argument("--html", dest="html_path", help="Fichier HTML de sortie.")
-    parser.add_argument("--no-console", action="store_true", help="N'affiche pas le rapport complet dans la console.")
+    parser.add_argument("--message-limit", type=int, default=420, help="Longueur maximale des exemples de message dans le HTML.")
+    parser.add_argument("--html", dest="html_path", help="Fichier HTML de sortie. Défaut : reports\\DTLexplains_<machine>_<date>.html")
+    parser.add_argument("--json", dest="json_path", help="Fichier JSON de sortie optionnel.")
+    parser.add_argument("--version", action="store_true", help="Affiche la version et quitte.")
     return parser.parse_args(argv)
+
+
+def validate_args(args: argparse.Namespace) -> Optional[str]:
+    if args.days < 1:
+        return "%DTLexplains-E-SYNTAX, --days doit être >= 1"
+    if args.max_events < 1:
+        return "%DTLexplains-E-SYNTAX, --max-events doit être >= 1"
+    if args.message_limit < 80:
+        return "%DTLexplains-E-SYNTAX, --message-limit doit être >= 80"
+    return None
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     configure_console()
     args = parse_args(argv)
 
+    if args.version:
+        print(f"{APP_NAME} {APP_VERSION}")
+        return 0
+
+    error = validate_args(args)
+    if error:
+        print(error)
+        return 2
+
     if os.name != "nt":
-        print("DTLexplains lit les journaux Windows : lance-le sur un poste Windows.")
+        print("%DTLexplains-E-PLATFORM, DTLexplains lit les journaux Windows : lance-le sur un poste Windows.")
         return 2
 
-    if args.days < 1:
-        print("--days doit être >= 1")
-        return 2
-    if args.max_events < 1:
-        print("--max-events doit être >= 1")
-        return 2
-
-    print(f"{APP_NAME} {APP_VERSION} - lecture des journaux Windows...")
     events, warnings = collect_events(args.logs, args.days, args.max_events, args.include_info)
     groups = summarize_events(events)
 
-    text_report = build_text_report(groups, len(events), warnings, args)
-    output_path = os.path.abspath(args.output) if args.output else default_output_path("txt")
-    write_text(output_path, text_report)
+    html_path = os.path.abspath(args.html_path) if args.html_path else default_output_path("html")
+    write_text(html_path, build_html_report(groups, len(events), warnings, args))
 
     if args.json_path:
         payload = {
             "app": APP_NAME,
-            "version": APP_VERSION,
+            "version": APP_VERSION_NUMERIC,
+            "display_version": APP_VERSION,
             "machine": socket.gethostname(),
             "generated_at": now_string(),
             "days": args.days,
@@ -720,18 +772,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         }
         write_text(os.path.abspath(args.json_path), json.dumps(payload, ensure_ascii=False, indent=2))
 
-    if args.html_path:
-        write_text(os.path.abspath(args.html_path), build_html_report(groups, len(events), warnings, args))
-
-    if not args.no_console:
-        print()
-        print(text_report)
-
-    print(f"Rapport texte sauvegardé : {output_path}")
-    if args.json_path:
-        print(f"Rapport JSON  sauvegardé : {os.path.abspath(args.json_path)}")
-    if args.html_path:
-        print(f"Rapport HTML  sauvegardé : {os.path.abspath(args.html_path)}")
+    print(build_console_summary(groups, len(events), warnings, args, html_path))
     return 0
 
 
@@ -739,9 +780,9 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
-        print("\nInterrompu par l'utilisateur.")
+        print("\n%DTLexplains-I-INTERRUPT, Interrompu par l'utilisateur.")
         raise SystemExit(130)
     except Exception:
-        print("\nErreur inattendue :")
+        print("\n%DTLexplains-F-UNEXPECTED, Erreur inattendue :")
         traceback.print_exc()
         raise SystemExit(1)

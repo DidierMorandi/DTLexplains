@@ -51,6 +51,8 @@ python -X utf8 DTLexplains.py --json reports\report.json
 
 ## Output
 
+![DTLexplains console output sample](sample.png)
+
 By default, the HTML report is created in:
 
 ``` text
